@@ -14,7 +14,7 @@ Student Number: 222482958
 | CPU | 2 vCPUs |
 | RAM | 1 GB |
 | Storage | 50 GB (EBS Volume) |
-| Operating System | Ubuntu 24.04 |
+| Operating System | Ubuntu 24.04 
 | Kubernetes Distribution | K3s |
 
 
