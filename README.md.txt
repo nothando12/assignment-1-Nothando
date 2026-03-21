@@ -1,4 +1,4 @@
-https://github.com/nothando12/assignment-1-Nothando
+https://github.com/nothando12/assignment-1-Nothando.git
 
 Name: Nothando Shandu
 Student Number: 222482958
