@@ -1,4 +1,4 @@
-https://github.com/Nothando-A-Shandu/assignment-1-Nothando.git
+https://github.com/nothando12/assignment-1-Nothando
 
 Name: Nothando Shandu
 Student Number: 222482958
@@ -10,7 +10,7 @@ Student Number: 222482958
 |-----------|--------------|
 | Cloud Provider | AWS EC2 |
 | Instance Type | t3.large |
-| CPU | 1 vCPUs |
+| CPU | 2 vCPUs |
 | RAM | 1 GB |
 | Storage | 50 GB (EBS Volume) |
 | Operating System | Ubuntu 24.04 |
