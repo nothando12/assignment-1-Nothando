@@ -81,13 +81,13 @@ Low Overhead: It removes "legacy" or "alpha" features and external cloud provide
 ##  Evidence of Deployment
 The following screenshots demonstrate the successful deployment of the K3s cluster on AWS.
 ## EC2 Instance
-![Instance](Screenshots/evidence/EC2-instance.png)
+![Instance](Screenshots/EC2-instance.png)
 
 ## Nodes
-![Nodes](Screenshots/evidence/k3s-nodes.png)
+![Nodes](Screenshots/k3s-nodes.png)
 
 ## Pods
-![Pods](Screenshots/evidence/k3s-pods.png)
+![Pods](Screenshots/k3s-pods.png)
 
 
 
