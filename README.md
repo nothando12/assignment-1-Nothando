@@ -100,6 +100,7 @@ The following screenshots demonstrate the successful deployment of the K3s clust
 ![Pods](Screenshots/master-pods.png)
 
 ## EC2 Instance
+![Instance](Screenshots/master-instance.png)
 ![Instance](Screenshots/EC2-instance.png)
 ![Instance](Screenshots/k3s_server-instance.png)
 ![Instance](Screenshots/k3s_agent-instance.png)
