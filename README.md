@@ -16,7 +16,7 @@ Deploy a lightweight Kubernetes cluster (k3s) on AWS, document the deployment, d
 | Instance Type | t3.large |
 | CPU | 2 vCPUs |
 | RAM | 1 GB |
-| Storage | 50 GB (EBS Volume) |
+| Storage | 8 GB (EBS Volume) |
 | Operating System | Ubuntu 24.04 
 | Kubernetes Distribution | K3s |
 
@@ -67,104 +67,262 @@ helm repo update
 helm install my-nginx bitnami/nginx
 
 kubectl get deployments
+## Prerequisites
 
-## create a security group for your K3s cluster
+- AWS account with permissions to create EC2 instances, VPCs, and security groups
+- AWS CLI v2 installed and configured (`aws configure`)
+- An EC2 SSH key pair created in the target region
+- `kubectl` installed on your local machine
 
+---
+
+## Step 1: AWS Infrastructure Setup
+
+### 1.1 — Variables (set once, reuse throughout)
+
+```sh
+export AWS_REGION="us-east-1"
+export KEY_NAME="my-k3s-key"        # existing EC2 key pair name
+export VPC_ID=$(aws ec2 describe-vpcs \
+  --filters "Name=isDefault,Values=true" \
+  --query "Vpcs[0].VpcId" --output text \
+  --region $AWS_REGION)
+export SUBNET_ID=$(aws ec2 describe-subnets \
+  --filters "Name=vpc-id,Values=$VPC_ID" \
+  --query "Subnets[0].SubnetId" --output text \
+  --region $AWS_REGION)
+```
+
+### 1.2 — Create a Security Group
+
+```sh
 export SG_ID=$(aws ec2 create-security-group \
   --group-name k3s-ha-sg \
   --description "K3s HA cluster security group" \
-  --vpc-id $(aws ec2 describe-vpcs --filters "Name=isDefault,Values=true" --query "Vpcs[0].VpcId" --output text --region $AWS_REGION) \
+  --vpc-id $VPC_ID \
   --region $AWS_REGION \
   --query GroupId --output text)
 
-echo 
+# SSH
+aws ec2 authorize-security-group-ingress --group-id $SG_ID \
+  --protocol tcp --port 22 --cidr 0.0.0.0/0 --region $AWS_REGION
 
-## Find Latest Ubuntu 22.04 LTS AMI
+# Kubernetes API server
+aws ec2 authorize-security-group-ingress --group-id $SG_ID \
+  --protocol tcp --port 6443 --cidr 0.0.0.0/0 --region $AWS_REGION
 
-export AMI_ID=$(aws ec2 describe-images \
-  --owners 099720109477 \
-  --filters "Name=name,Values=ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*" \
-  --query "sort_by(Images,&CreationDate)[-1].ImageId" \
-  --output text \
-  --region $AWS_REGION)
+# etcd (inter-node only — restrict to the SG itself)
+aws ec2 authorize-security-group-ingress --group-id $SG_ID \
+  --protocol tcp --port 2379-2380 --source-group $SG_ID --region $AWS_REGION
 
-echo
+# Kubelet
+aws ec2 authorize-security-group-ingress --group-id $SG_ID \
+  --protocol tcp --port 10250 --source-group $SG_ID --region $AWS_REGION
 
- ## Launch 3 EC2 Instances (Masters) for i in 1 2 3; do
+# Flannel VXLAN
+aws ec2 authorize-security-group-ingress --group-id $SG_ID \
+  --protocol udp --port 8472 --source-group $SG_ID --region $AWS_REGION
 
- aws ec2 run-instances \
+# NodePort range (for test applications)
+aws ec2 authorize-security-group-ingress --group-id $SG_ID \
+  --protocol tcp --port 30000-32767 --cidr 0.0.0.0/0 --region $AWS_REGION
+
+echo "Security group: $SG_ID"
+```
+
+### 1.3 — Launch 3 x t3.large Instances
+
+```sh
+# Ubuntu 22.04 LTS AMI (update the ami-* ID for your region)
+export AMI_ID="ami-0c7217cdde317cfec"   # us-east-1 Ubuntu 22.04 LTS
+
+for i in 1 2 3; do
+  aws ec2 run-instances \
     --image-id $AMI_ID \
     --instance-type t3.large \
     --key-name $KEY_NAME \
     --security-group-ids $SG_ID \
-    --subnet-id $(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$(aws ec2 describe-vpcs --filters Name=isDefault,Values=true --query Vpcs[0].VpcId --output text --region $AWS_REGION)" --query "Subnets[0].SubnetId" --output text --region $AWS_REGION) \
+    --subnet-id $SUBNET_ID \
     --associate-public-ip-address \
     --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=k3s-master-$i}]" \
     --region $AWS_REGION \
     --query "Instances[0].InstanceId" --output text
 done
+```
 
- ## Step 2: Prepare All Nodes
-Do this on all 3 master nodes (k3s-master-1, 2, 3) via SSH.
+> **Note:** Replace `ami-0c7217cdde317cfec` with the latest Ubuntu 22.04 LTS AMI for your region. Find it with:
+> ```sh
+> aws ec2 describe-images --owners 099720109477 \
+>   --filters "Name=name,Values=ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*" \
+>   --query "sort_by(Images,&CreationDate)[-1].ImageId" \
+>   --output text --region $AWS_REGION
+> ```
 
- ssh -i k3s_master_1.pem ubuntu@54.174.236.168
+### 1.4 — Note the Private and Public IPs
 
-sudo apt update -y
-sudo apt upgrade -y
+```sh
+aws ec2 describe-instances \
+  --filters "Name=tag:Name,Values=k3s-master-*" "Name=instance-state-name,Values=running" \
+  --query "Reservations[*].Instances[*].[Tags[?Key=='Name']|[0].Value,PrivateIpAddress,PublicIpAddress]" \
+  --output table --region $AWS_REGION
+```
 
-sudo apt install -y curl wget vim git
+Record the values — you will need them throughout this guide:
 
-sudo swapoff -a
-sudo sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
+| Hostname | Private IP | Public IP |
+|----------|------------|-----------|
+| k3s-master-1 |172.31.95.12 |54.175.187.134 |
+| k3s-master-2 |172.31.82.89  | 18.204.217.158 |
+| k3s-master-3 |172.31.83.197 |54.174.33.136  |
 
-Required for container networking:
+---
 
-sudo modprobe br_netfilter
-echo "br_netfilter" | sudo tee /etc/modules-load.d/k8s.conf
+## Step 2: Prepare All Nodes
 
-sudo tee /etc/sysctl.d/k8s.conf<<EOF
-net.bridge.bridge-nf-call-ip6tables = 1
-net.bridge.bridge-nf-call-iptables = 1
-EOF
+Run the following on **each** of the 3 instances.
 
-sudo hostnamectl set-hostname k3s-master-1 
+### 2.1 — SSH into the node
 
-TO GET TOKEN: sudo cat /var/lib/rancher/k3s/server/node-token
-exit
-ssh -i my-k3s-key.pem ubuntu@<PUBLIC IP MASTER 2>
-curl -sfL https://get.k3s.io | sh -s - server \
-  --server https://<MASTER-1 PRIVATE IP>:6443 \ 
-  --token <PASTE_TOKEN_HERE> \
-  --node-ip=<MASTER-2 PRIVATE IP>
-sudo systemctl status k3s
+```sh
+ssh -i ~/.ssh/$KEY_NAME.pem ubuntu@<public-ip>
+```
 
-Install K3s *as the first server*:
+### 2.2 — Set the hostname (run separately on each node)
 
-bash id="k3s-master1"
-curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="v1.30.8+k3s1" sh -s - server \
-  --cluster-init \
-  --server https://172.31.92.179:6443 \
-  --tls-san 3.95.24.101
+```sh
+# On k3s-master-1
+sudo hostnamectl set-hostname k3s-master-1
 
-Check status:
-
-bash id="check-k3s1"
-sudo systemctl status k3s
-sudo k3s kubectl get nodes
-
+# On k3s-master-2
 sudo hostnamectl set-hostname k3s-master-2
 
+# On k3s-master-3
+sudo hostnamectl set-hostname k3s-master-3
+```
+
+### 2.3 — Update packages and set timezone
+
+```sh
 sudo apt-get update && sudo apt-get upgrade -y
 sudo timedatectl set-timezone UTC
+```
 
+### 2.4 — Update `/etc/hosts` on every node
+
+Add an entry for each node so they can resolve each other by hostname. Replace the IPs with your **private** IPs.
+
+```sh
 sudo tee -a /etc/hosts <<EOF
-172.31.27.129 k3s-master-1
-172.31.19.72  k3s-master-2
-172.31.23.157 k3s-master-3
+172.31.95.12  k3s-master-1
+172.31.82.89  k3s-master-2
+172.31.83.197  k3s-master-3
 EOF
+```
 
-sudo swapoff -a
-sudo sed -i '/ swap / s/^/#/' /etc/fstab
+> K3s does not require swap to be disabled, but it is recommended for predictable performance.
+> ```sh
+> sudo swapoff -a
+> sudo sed -i '/ swap / s/^/#/' /etc/fstab
+> ```
+
+---
+
+## Step 3: Install K3s on the First Master Node
+
+SSH into **k3s-master-1**.
+
+### 3.1 — Create the K3s configuration file
+
+```sh
+sudo mkdir -p /etc/rancher/k3s
+
+# Replace  with the private IP of k3s-master-1
+# Replace 1.2.3.4  with the public IP / Elastic IP of k3s-master-1
+sudo tee /etc/rancher/k3s/config.yaml <<EOF
+cluster-init: true
+node-ip: 172.31.95.12 
+advertise-address: 172.31.95.12 
+tls-san:
+  - 172.31.95.12 
+  - 54.175.187.134
+  - k3s-master-1
+disable: [servicelb, traefik]
+EOF
+```
+
+> **Why `disable: [servicelb, traefik]`?**
+> - `servicelb` (Klipper) is replaced by the AWS cloud controller or an NLB.
+> - `traefik` is replaced by the NGINX Ingress Controller in Step 7.
+> Using the list syntax avoids the YAML duplicate-key bug where only the last `disable:` entry would take effect.
+
+### 3.2 — Install K3s
+
+```sh
+curl -sfL https://get.k3s.io | sh -
+```
+
+### 3.3 — Verify the installation
+
+```sh
+sudo kubectl get nodes
+sudo kubectl get pods -A
+```
+
+### 3.4 — Retrieve the cluster join token
+
+```sh
+sudo cat /var/lib/rancher/k3s/server/token
+```
+
+Save this token — you will need it in the next step.
+
+---
+
+## Step 4: Join Master Nodes 2 and 3
+
+Run the following on **k3s-master-2** and **k3s-master-3** (adjust IPs accordingly).
+
+### 4.1 — Create the K3s configuration file
+
+```sh
+sudo mkdir -p /etc/rancher/k3s
+
+# Example for k3s-master-2. Replace IPs and token with your values.
+sudo tee /etc/rancher/k3s/config.yaml <<EOF
+server: https://172.31.82.89:6443
+token: <token-from-master-1>
+node-ip: 172.31.82.89
+advertise-address:172.31.82.89 
+tls-san:
+  - 172.31.82.89
+  - 18.204.217.158
+  - k3s-master-2
+disable: [servicelb, traefik]
+EOF
+```
+
+### 4.2 — Install K3s as a server node
+
+```sh
+curl -sfL https://get.k3s.io | sh -s - server
+```
+
+### 4.3 — Verify cluster membership (run on any master node)
+
+```sh
+sudo kubectl get nodes -o wide
+```
+
+All 3 nodes should appear with status `Ready` and role `control-plane,master`.
+
+```
+NAME           STATUS   ROLES                       AGE   VERSION
+k3s-master-1   Ready    control-plane,etcd,master   5m    v1.30.x+k3s1
+k3s-master-2   Ready    control-plane,etcd,master   2m    v1.30.x+k3s1
+k3s-master-3   Ready    control-plane,etcd,master   1m    v1.30.x+k3s1
+```
+
+
 
 
 
