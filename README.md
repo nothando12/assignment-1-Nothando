@@ -4,6 +4,9 @@ Name: Nothando Shandu
 
 Student Number: 222482958
 
+## Purpose
+Deploy a lightweight Kubernetes cluster (k3s) on AWS, document the deployment, demonstrate evidence, and reflect on the work. This develops technical, problem-solving, documentation, and professional skills.
+
 
 ## System Requirements
 
@@ -214,10 +217,6 @@ The following screenshots demonstrate the successful deployment of the K3s clust
 ## Deployment
 ![Deployment](Screenshots/k3s-server-deployment.png)
 ![Deployemnt](Screenshots/k3s-agent-deployment.png)
-
-
-
-
 
 
 
